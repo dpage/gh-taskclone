@@ -8,8 +8,8 @@ exception: the label that is used to indicate that a task occurs every year.
 ## Usage
 
 ```bash
-$ python3 rh-ticketclone.py -h
-usage: rh-ticketclone.py [-h] --source-repo SOURCE_REPO --source-owner SOURCE_OWNER --target-repo TARGET_REPO --target-owner TARGET_OWNER [--label LABEL]
+$ python3 gh-taskclone.py -h
+usage: gh-taskclone.py [-h] --source-repo SOURCE_REPO --source-owner SOURCE_OWNER --target-repo TARGET_REPO --target-owner TARGET_OWNER [--label LABEL]
 
 Copy tasks (issue titles) from one Github project to another.
 
@@ -30,7 +30,7 @@ options:
 ## Example
 
 ```bash
-$ python3 rh-ticketclone.py --source-repo source-repo --source-owner dpage --target-repo target-repo --target-owner dpage 
+$ python3 gh-taskclone.py --source-repo source-repo --source-owner dpage --target-repo target-repo --target-owner dpage 
 Creating: Find a venue
 Creating: Book a party location
 Copied 2 tasks.
