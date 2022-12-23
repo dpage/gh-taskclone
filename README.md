@@ -1,4 +1,4 @@
-# rh-ticketclone
+# gh-taskclone
 
 This is a simple tool for copying tasks (Github issue titles) from one Github repository to another. This was born from 
 the intention to use Github issues for tracking tasks related to PostgreSQL Conferencce Europe, where there are a 
