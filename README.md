@@ -1,15 +1,17 @@
 # gh-taskclone
 
-This is a simple tool for copying tasks (Github issue titles) from one Github repository to another. This was born from 
+This is a simple tool for copying tasks (Github issue) from one Github repository to another. This was born from 
 the intention to use Github issues for tracking tasks related to PostgreSQL Conferencce Europe, where there are a 
-subset of tasks that occur for each annual event. It does not copy the comments or other metadata on issues, with one
-exception: the label that is used to indicate that a task occurs every year.
+subset of tasks that occur for each annual event. 
+
+The tool will copy issue titles, the body (first comment), the label used to mark an issue as "annual", and any other
+whitelisted labels (or all labels, if the whitelist is omitted).
 
 ## Usage
 
 ```bash
 $ python3 gh-taskclone.py -h
-usage: gh-taskclone.py [-h] --source-repo SOURCE_REPO --source-owner SOURCE_OWNER --target-repo TARGET_REPO --target-owner TARGET_OWNER [--label LABEL]
+usage: gh-taskclone.py [-h] --source-repo SOURCE_REPO --source-owner SOURCE_OWNER --target-repo TARGET_REPO --target-owner TARGET_OWNER [--label LABEL] [--whitelist WHITELIST]
 
 Copy tasks (issue titles) from one Github project to another.
 
@@ -24,16 +26,22 @@ options:
   --target-owner TARGET_OWNER
                         the target repo owner name (owner may be an org or user)
   --label LABEL         a label to limit copying to (default: annual)
-
+  --whitelist WHITELIST
+                        a comma delimited list of labels to copy (in addition to the selection label. If omitted (or empty), all labels will be copied.
 ```
 
 ## Example
 
 ```bash
-$ python3 gh-taskclone.py --source-repo source-repo --source-owner dpage --target-repo target-repo --target-owner dpage 
-Creating: Find a venue
-Creating: Book a party location
-Copied 2 tasks.
+$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner dpage --target-repo gh-tc-target --target-owner dpage --whitelist venue,party 
+Creating label: annual
+Creating label: party
+Creating issue: Find a party venue
+Creating issue: Review AV requirements
+Creating label: venue
+Creating issue: Find a venue.
+Copied 3 tasks.
+
 ```
 
 ## Authentication

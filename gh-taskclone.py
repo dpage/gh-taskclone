@@ -30,23 +30,63 @@ def read_command_line():
                         help="the target repo owner name (owner may be an org or user)")
     parser.add_argument("--label", default="annual",
                         help="a label to limit copying to (default: annual)")
+    parser.add_argument("--whitelist", default="",
+                        help="a comma delimited list of labels to copy (in addition to the selection label. "
+                             "If omitted (or empty), all labels will be copied.")
 
     return parser.parse_args()
 
 
 def get_issues(repo, label):
     issues = []
-    for issue in repo.issues(labels=label):
-        issues.append(issue.title)
+    for i in repo.issues(labels=label):
+        labels = []
+        for l in i.labels():
+            labels.append(l)
+
+        issue = {'title': i.title,
+                 'body': i.body,
+                 'labels': labels}
+        issues.append(issue)
 
     return issues
 
 
-def create_issues(repo, issues, label):
-    for issue in issues:
-        print(f'Creating: {issue}')
+def create_labels(repo, labels, label, whitelist):
+    for l in labels:
+        # Only create the default label, or a whitelisted one, if there is a whitelist
+        if l.name == label or len(whitelist) == 0 or l.name in whitelist:
+            # Does the label exist in the target repo?
+            found = False
+            for a in repo.labels():
+                if a.name == l.name:
+                    found = True
+                    break
+
+            # Create the label if needed
+            if not found:
+                print(f'Creating label: {l.name}')
+                try:
+                    repo.create_label(l.name, l.color)
+                except Exception as e:
+                    print(f'Error creating the label {l.name}: {e}')
+                    sys.exit(1)
+
+
+def create_issues(repo, issues, label, whitelist):
+    for i in issues:
+        create_labels(repo, i['labels'], label, whitelist)
+
+        print(f'Creating issue: {i["title"]}')
+
+        # Get the list of labels
+        labels = []
+        for l in i['labels']:
+            if l.name == label or len(whitelist) == 0 or l.name in whitelist:
+                labels.append(l.name)
+
         try:
-            repo.create_issue(issue, labels=[label])
+            repo.create_issue(i['title'], body=i['body'], labels=labels)
         except Exception as e:
             print(f'Error creating the issue: {e}')
             sys.exit(1)
@@ -87,23 +127,12 @@ if __name__ == '__main__':
         print(f'Error opening the target repository: {e}')
         sys.exit(1)
 
-    # Does the label exist in the target repo?
-    label_found = False
-    for l in target_repo.labels():
-        if l.name == args.label:
-            label_found = True
-            break
-
-    # Create the label if needed
-    if not label_found:
-        try:
-            target_repo.create_label(args.label, '#cfd3d7')
-        except Exception as e:
-            print(f'Error creating the label {args.label}: {e}')
-            sys.exit(1)
+    whitelist = []
+    if len(args.whitelist):
+        whitelist = args.whitelist.split(',')
 
     # Perform the copy...
     issues = get_issues(source_repo, args.label)
-    create_issues(target_repo, issues, args.label)
+    create_issues(target_repo, issues, args.label, whitelist)
 
     print(f'Copied {len(issues)} tasks.')
