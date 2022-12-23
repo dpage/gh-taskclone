@@ -31,9 +31,7 @@ def read_command_line():
     parser.add_argument("--label", default="annual",
                         help="a label to limit copying to (default: annual)")
 
-    args = parser.parse_args()
-
-    return args
+    return parser.parse_args()
 
 
 def get_issues(repo, label):
@@ -48,7 +46,7 @@ def create_issues(repo, issues, label):
     for issue in issues:
         print(f'Creating: {issue}')
         try:
-            new_issue = repo.create_issue(issue, labels=[label])
+            repo.create_issue(issue, labels=[label])
         except Exception as e:
             print(f'Error creating the issue: {e}')
             sys.exit(1)
