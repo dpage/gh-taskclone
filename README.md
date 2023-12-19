@@ -30,6 +30,8 @@ options:
                         a comma delimited list of labels to copy (in addition to the selection label. If omitted (or empty), all labels will be copied.
 ```
 
+Note: `SOURCE_OWNER` and `TARGET_OWNER` is the owner of the repository (the part after `github.com`), not necessarily your own username.
+
 ## Example
 
 ```bash
@@ -43,6 +45,10 @@ Creating issue: Find a venue.
 Copied 3 tasks.
 
 ```
+
+## Add tasks to Project
+
+Go into the repository, click on `Issues`, select all newly created Issues. Then click on *Projects* and assign the Issues to your Project. The Issues will show up in the first column of the Project dashboard.
 
 ## Authentication
 
