@@ -8,6 +8,7 @@
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 import github3
@@ -74,6 +75,7 @@ def create_labels(repo, labels, label, whitelist):
 
 
 def create_issues(repo, issues, label, whitelist):
+    c = 0
     for i in issues:
         create_labels(repo, i['labels'], label, whitelist)
 
@@ -90,6 +92,13 @@ def create_issues(repo, issues, label, whitelist):
         except Exception as e:
             print(f'Error creating the issue: {e}')
             sys.exit(1)
+
+        c = c + 1
+
+        if c > 10:
+            print('Sleeping to avoid Github\'s secondary rate limit. Sigh...')
+            time.sleep(60)
+            c = 0
 
 
 if __name__ == '__main__':
