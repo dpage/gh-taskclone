@@ -39,7 +39,7 @@ def read_command_line():
 
 def get_issues(repo, label):
     issues = []
-    for i in repo.issues(labels=label):
+    for i in repo.issues(labels=label, state='all'):
         labels = []
         for l in i.labels():
             labels.append(l)
