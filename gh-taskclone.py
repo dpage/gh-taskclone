@@ -131,7 +131,7 @@ if __name__ == '__main__':
         sys.exit(1)
 
     try:
-        target_repo = github.repository(args.source_owner, args.target_repo)
+        target_repo = github.repository(args.target_owner, args.target_repo)
     except Exception as e:
         print(f'Error opening the target repository: {e}')
         sys.exit(1)
