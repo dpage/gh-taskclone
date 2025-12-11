@@ -84,7 +84,7 @@ def create_labels(target_repo, source_labels, selection_label, whitelist_labels)
             if src_label.name not in target_labels_cache:
                 print(f'  Creating label: {src_label.name}')
                 try:
-                    new_label = target_repo.create_label(src_label.name, src_label.color)
+                    new_label = target_repo.create_label(src_label.name, src_label.color, src_label.description)
                     target_labels_cache[new_label.name] = new_label # Add to cache
                 except github3.exceptions.GitHubException as e:
                     # 422 often means it already exists (race condition/cache miss)
@@ -95,6 +95,7 @@ def create_labels(target_repo, source_labels, selection_label, whitelist_labels)
                            target_labels_cache[src_label.name] = target_repo.label(src_label.name)
                         except github3.exceptions.GitHubException:
                            print(f"    Could not confirm existence of '{src_label.name}'.")
+                           sys.exit(1)
                     else:
                         print(f'    Error creating the label {src_label.name}: {e}')
                         sys.exit(1)
