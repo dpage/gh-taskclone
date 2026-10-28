@@ -56,17 +56,16 @@ def read_command_line():
     args = parser.parse_args()
 
     # Checks which need no API data
-    attach_value = args.attach_labels
-    option_name = "--attach-labels"
-
     args.attach_labels_list = []
-    if attach_value is not None:
-        args.attach_labels_list = parse_label_list(attach_value)
+    if args.attach_labels is not None:
+        # 'all' is matched case-insensitively, like label names
+        args.attach_labels_list = ['all' if w.lower() == 'all' else w
+                                   for w in parse_label_list(args.attach_labels)]
         if not args.attach_labels_list:
-            parser.error(f"{option_name} must contain at least one label name "
-                         f"(or 'all')")
+            parser.error("--attach-labels must contain at least one label name "
+                         "(or 'all')")
         if 'all' in args.attach_labels_list and len(args.attach_labels_list) > 1:
-            parser.error(f"'all' in {option_name} cannot be combined with other labels")
+            parser.error("'all' in --attach-labels cannot be combined with other labels")
 
     return args
 
@@ -152,8 +151,9 @@ def select_labels(issue_labels, selection_label, attach_labels):
 
 
 def validate_attach_labels(attach_labels, selection_label, source_labels,
-                           target_cache, clone_labels_enabled):
-    """Exits if a label listed in --attach-labels is not available."""
+                           target_cache):
+    """Exits if a label listed in --attach-labels exists in neither the source
+    nor the target repo. Labels missing in the target are created on demand."""
     if attach_labels == ['all']:
         return
 
@@ -164,7 +164,7 @@ def validate_attach_labels(attach_labels, selection_label, source_labels,
         key = label_key(name)
         if key == selection_key or key in [label_key(m) for m in missing]:
             continue
-        if key in target_cache or (clone_labels_enabled and key in source_by_key):
+        if key in target_cache or key in source_by_key:
             continue
         missing.append(name)
 
@@ -181,12 +181,9 @@ def validate_attach_labels(attach_labels, selection_label, source_labels,
                       f"--attach-labels, use 'all' instead.")
                 sys.exit(1)
 
-    print("Error: these labels given in --attach-labels do not exist: " +
+    print("Error: these labels given in --attach-labels exist in neither the "
+          "source nor the target repository: " +
           ", ".join(f"'{n}'" for n in missing))
-    in_source = [n for n in missing if label_key(n) in source_by_key]
-    if in_source and not clone_labels_enabled:
-        print("  --clone-labels would create these labels from the source repo: " +
-              ", ".join(f"'{n}'" for n in in_source))
     print("No changes were made.")
     sys.exit(1)
 
@@ -453,7 +450,7 @@ if __name__ == '__main__':
     source_labels = fetch_labels(source_repo)
     target_cache = get_target_labels_cache(target_repo, fetch_labels(target_repo))
     validate_attach_labels(args.attach_labels_list, args.label, source_labels,
-                           target_cache, args.clone_labels)
+                           target_cache)
 
     # Perform the copy of labels (if requested)
     if args.clone_labels:

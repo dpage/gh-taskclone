@@ -19,7 +19,7 @@ pip install github3.py
 ```bash
 $ python3 gh-taskclone.py -h
 usage: gh-taskclone.py [-h] --source-repo SOURCE_REPO --source-owner SOURCE_OWNER --target-repo TARGET_REPO --target-owner TARGET_OWNER [--label LABEL]
-                       [--clone-milestones] [--clone-labels] [--attach-labels ATTACH_LABELS] [--whitelist WHITELIST]
+                       [--clone-milestones] [--clone-labels] [--attach-labels ATTACH_LABELS]
 
 Copy tasks (issues) from one Github project to another, optionally including labels and milestones.
 
@@ -40,23 +40,20 @@ options:
   --attach-labels ATTACH_LABELS
                         a comma delimited list of labels to attach to the copied issues (in addition to the selection label), or 'all' to attach all labels of the
                         source issue. If omitted, only the selection label is attached.
-  --whitelist WHITELIST
-                        deprecated, use --attach-labels instead. Treated as --attach-labels.
 ```
 
 Note: `SOURCE_OWNER` and `TARGET_OWNER` is the owner of the repository (the part after `github.com`), not necessarily your own username.
 
 ## Labels
 
-* Without `--attach-labels` only the selection label (`--label`, default `annual`) is attached to the copied issues. Other labels are not copied.
+* By default (without `--attach-labels`) only the selected label (`--label`, default `annual`) is copied to the new issues. Other labels are not copied.
 * `--attach-labels venue,party` attaches these labels (if the source issue carries them), in addition to the selection label. Listing the selection label is accepted.
-* `--attach-labels all` attaches all labels of the source issue. `all` cannot be combined with other labels.
+* `--attach-labels all` attaches all labels of the source issue. `all` (in any case) cannot be combined with other labels.
 * Label names are matched case-insensitively.
-* `--whitelist` is deprecated and treated as `--attach-labels`. Unlike before, omitting it no longer means "all labels", use `--attach-labels all` for that. Using both options is an error.
 * `--clone-labels` clones all labels of the source repository, independent of `--label` and `--attach-labels`. Missing labels are created (name, color, description), for labels existing in both repositories color and description are overwritten from the source. Labels which exist only in the target are left alone, labels are never deleted. Any failure while cloning labels stops the script; labels handled before the failure are kept.
-* Before anything is written, all labels listed in `--attach-labels` are checked. A label must exist in the target repository, or in the source repository if `--clone-labels` is used. Otherwise the script exits without changes.
+* Before anything is written, all labels listed in `--attach-labels` are checked. A label must exist in the source or the target repository, otherwise (for example a typo) the script exits without changes. A listed label which exists only in the source is created in the target when an issue carrying it is copied, with or without `--clone-labels`.
 * Comma limitation: Github allows commas in label names, but `--attach-labels` is a comma separated list and can not express them. If a listed name is missing and is part of such a label, the script exits with an error. Use `--attach-labels all` in this case.
-* Arguments are checked right after parsing, before any network access: `--whitelist` together with `--attach-labels`, an empty value (`""`, `" "`, `,`), and `all` combined with other labels fail with a usage message (exit code 2).
+* Arguments are checked right after parsing, before any network access: an empty value (`""`, `" "`, `,`), and `all` combined with other labels fail with a usage message (exit code 2).
 
 ## Examples
 
@@ -119,14 +116,13 @@ Processing source issue #2: 'Review AV requirements'
 Finished. Copied 3 tasks.
 ```
 
-A label which does not exist in the target repository fails before any change is made:
+A label which exists in neither repository fails before any change is made:
 
 ```bash
-$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner dpage --target-repo gh-tc-target --target-owner dpage --attach-labels "venue,party"
+$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner dpage --target-repo gh-tc-target --target-owner dpage --attach-labels "venu,party"
 ...
 Found 1 labels in target.
-Error: these labels given in --attach-labels do not exist: 'venue', 'party'
-  --clone-labels would create these labels from the source repo: 'venue', 'party'
+Error: these labels given in --attach-labels exist in neither the source nor the target repository: 'venu'
 No changes were made.
 ```
 
