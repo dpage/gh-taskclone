@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 #
-# This tool will clone Github issues (titles, bodies, labels, and optionally
-# milestones) from one repository to another.
+# This tool will clone Github issues (titles, bodies, and selected labels) from
+# one repository to another. Optionally it also clones the repository labels
+# (--clone-labels) and milestones (--clone-milestones).
 #
 
 import argparse
@@ -15,10 +16,16 @@ import github3  # Ensure installed: pip install github3.py
 # Global cache for target labels to avoid repeated API calls
 target_labels_cache = None
 
+def parse_label_list(value):
+    """Split a comma delimited list of label names, dropping empty entries."""
+    return [w.strip() for w in value.split(',') if w.strip()]
+
+
 def read_command_line():
     """Read the command line arguments."""
     parser = argparse.ArgumentParser(
-        description='Copy tasks (issues) from one Github project to another.')
+        description='Copy tasks (issues) from one Github project to another, '
+                    'optionally including labels and milestones.')
     parser.add_argument("--source-repo", required=True,
                         help="the source repo name")
     parser.add_argument("--source-owner", required=True,
@@ -33,12 +40,34 @@ def read_command_line():
     parser.add_argument("--clone-milestones", action="store_true",
                         help="Enable cloning of milestones and assignment "
                              "of issues to them. Default: False")
-    parser.add_argument("--whitelist", default="",
-                        help="a comma delimited list of labels to copy "
-                             "(in addition to the selection label). "
-                             "If omitted, all labels will be copied.")
+    parser.add_argument("--clone-labels", action="store_true",
+                        help="Enable cloning of all labels of the source repo "
+                             "(name, color, description) to the target repo. "
+                             "Missing labels are created, existing labels get "
+                             "color and description overwritten from the "
+                             "source. Labels are never deleted. Default: False")
+    parser.add_argument("--attach-labels", default=None,
+                        help="a comma delimited list of labels to attach to "
+                             "the copied issues (in addition to the selection "
+                             "label), or 'all' to attach all labels of the "
+                             "source issue. If omitted, only the selection "
+                             "label is attached.")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # Checks which need no API data
+    args.attach_labels_list = []
+    if args.attach_labels is not None:
+        # 'all' is matched case-insensitively, like label names
+        args.attach_labels_list = ['all' if w.lower() == 'all' else w
+                                   for w in parse_label_list(args.attach_labels)]
+        if not args.attach_labels_list:
+            parser.error("--attach-labels must contain at least one label name "
+                         "(or 'all')")
+        if 'all' in args.attach_labels_list and len(args.attach_labels_list) > 1:
+            parser.error("'all' in --attach-labels cannot be combined with other labels")
+
+    return args
 
 
 def get_issues(repo, label_name):
@@ -64,41 +93,204 @@ def get_issues(repo, label_name):
     return issues_data
 
 
-def create_labels(target_repo, source_labels, selection_label, whitelist_labels):
-    """Ensures necessary labels exist in the target repo."""
+def label_key(name):
+    """Normalized label name: Github label names are case-insensitive."""
+    return name.lower()
+
+
+def color_value(color):
+    """A label color as sent to the API: no leading '#'."""
+    return (color or '').lstrip('#')
+
+
+def fetch_labels(repo):
+    """Fetches all labels of a repo."""
+    try:
+        return list(repo.labels())
+    except github3.exceptions.GitHubException as e:
+        print(f"Error fetching labels from '{repo.full_name}': {e}")
+        sys.exit(1)
+
+
+def get_target_labels_cache(target_repo, target_labels=None):
+    """Returns the target label cache (lowercased name -> label object),
+    filling it from target_labels or from the API on first use."""
     global target_labels_cache
 
-    # Fetch and cache target labels once if not already done
     if target_labels_cache is None:
-        print("Fetching existing labels from target repo...")
-        target_labels_cache = {lbl.name: lbl for lbl in target_repo.labels()}
+        if target_labels is None:
+            print("Fetching existing labels from target repo...")
+            target_labels = fetch_labels(target_repo)
+        # Avoid requesting labels multiple times, this will run into the
+        # API limit really quick.
+        target_labels_cache = {label_key(lbl.name): lbl for lbl in target_labels}
         print(f"Found {len(target_labels_cache)} labels in target.")
+    return target_labels_cache
 
-    for src_label in source_labels:
-        # Check if we should copy this label
-        if src_label.name == selection_label or \
-           len(whitelist_labels) == 0 or \
-           src_label.name in whitelist_labels:
 
-            # Check if it exists in the target cache
-            if src_label.name not in target_labels_cache:
-                print(f'  Creating label: {src_label.name}')
-                try:
-                    new_label = target_repo.create_label(src_label.name, src_label.color, src_label.description)
-                    target_labels_cache[new_label.name] = new_label # Add to cache
-                except github3.exceptions.GitHubException as e:
-                    # 422 often means it already exists (race condition/cache miss)
-                    if e.code == 422:
-                        print(f"    Label '{src_label.name}' likely already exists (422).")
-                        # Try to fetch it to add to cache if possible
-                        try:
-                           target_labels_cache[src_label.name] = target_repo.label(src_label.name)
-                        except github3.exceptions.GitHubException:
-                           print(f"    Could not confirm existence of '{src_label.name}'.")
-                           sys.exit(1)
-                    else:
-                        print(f'    Error creating the label {src_label.name}: {e}')
+def select_labels(issue_labels, selection_label, attach_labels):
+    """Returns the label objects of an issue which are to be attached to the
+    copy. The selection label is always attached, attach_labels is a list of
+    label names or ['all']."""
+    if attach_labels == ['all']:
+        wanted = None
+    else:
+        wanted = {label_key(selection_label)}
+        wanted.update(label_key(n) for n in attach_labels)
+
+    selected = []
+    seen = set()
+    for lbl in issue_labels:
+        key = label_key(lbl.name)
+        if key in seen:
+            continue
+        if wanted is None or key in wanted:
+            seen.add(key)
+            selected.append(lbl)
+    return selected
+
+
+def validate_attach_labels(attach_labels, selection_label, source_labels,
+                           target_cache):
+    """Exits if a label listed in --attach-labels exists in neither the source
+    nor the target repo. Labels missing in the target are created on demand."""
+    if attach_labels == ['all']:
+        return
+
+    source_by_key = {label_key(lbl.name): lbl for lbl in source_labels}
+    selection_key = label_key(selection_label)
+    missing = []
+    for name in attach_labels:
+        key = label_key(name)
+        if key == selection_key or key in [label_key(m) for m in missing]:
+            continue
+        if key in target_cache or key in source_by_key:
+            continue
+        missing.append(name)
+
+    if not missing:
+        return
+
+    # A comma in a label name cannot be expressed in the comma delimited list
+    for name in missing:
+        for lbl in list(source_labels) + list(target_cache.values()):
+            fragments = [f.strip().lower() for f in lbl.name.split(',')]
+            if ',' in lbl.name and label_key(name) in fragments:
+                print(f"Error: '{name}' is part of the label '{lbl.name}', which "
+                      f"contains a comma. Such labels cannot be listed in "
+                      f"--attach-labels, use 'all' instead.")
+                sys.exit(1)
+
+    print("Error: these labels given in --attach-labels exist in neither the "
+          "source nor the target repository: " +
+          ", ".join(f"'{n}'" for n in missing))
+    print("No changes were made.")
+    sys.exit(1)
+
+
+def create_labels(target_repo, selected_labels):
+    """Ensures the selected labels exist in the target repo."""
+    cache = get_target_labels_cache(target_repo)
+
+    for src_label in selected_labels:
+        # Check if it exists in the target cache
+        if label_key(src_label.name) not in cache:
+            print(f"  Creating label '{src_label.name}'")
+            try:
+                new_label = target_repo.create_label(src_label.name,
+                                                     color_value(src_label.color),
+                                                     src_label.description or '')
+                if new_label is None:
+                    print(f"    Error creating the label '{src_label.name}': no label returned")
+                    sys.exit(1)
+                cache[label_key(new_label.name)] = new_label # Add to cache
+            except github3.exceptions.GitHubException as e:
+                # 422 often means it already exists (race condition/cache miss)
+                if e.code == 422:
+                    print(f"    Label '{src_label.name}' likely already exists (422).")
+                    # Try to fetch it to add to cache if possible
+                    try:
+                        existing = target_repo.label(src_label.name)
+                    except github3.exceptions.GitHubException:
+                        existing = None
+                    if existing is None:
+                        print(f"    Could not confirm existence of '{src_label.name}'.")
                         sys.exit(1)
+                    cache[label_key(existing.name)] = existing
+                else:
+                    print(f"    Error creating the label '{src_label.name}': {e}")
+                    sys.exit(1)
+            # Label writes: sleep to stay below Github's rate limits
+            time.sleep(1)
+
+
+def diff_labels(source_labels, target_cache):
+    """Compares source labels with the target labels. Returns a list of
+    labels to create and a list of (source, target, changes) to update.
+    No API calls."""
+    to_create = []
+    to_update = []
+    for src in source_labels:
+        tgt = target_cache.get(label_key(src.name))
+        if tgt is None:
+            to_create.append(src)
+            continue
+        changes = []
+        if color_value(src.color).lower() != color_value(tgt.color).lower():
+            changes.append(f"color '{color_value(tgt.color)}' -> '{color_value(src.color)}'")
+        if (src.description or '') != (tgt.description or ''):
+            changes.append("description")
+        if changes:
+            to_update.append((src, tgt, changes))
+    return to_create, to_update
+
+
+def clone_labels(source_repo, target_repo, source_labels):
+    """Clones labels from source_repo to target_repo: creates missing labels
+    and syncs color and description of existing ones. Never deletes labels.
+    Any failure is fatal."""
+    print("\nAttempting to clone labels...")
+    cache = get_target_labels_cache(target_repo)
+    print(f"Found {len(source_labels)} labels in '{source_repo.full_name}'.")
+
+    to_create, to_update = diff_labels(source_labels, cache)
+
+    for src in to_create:
+        print(f"  - Creating label '{src.name}'")
+        try:
+            new_label = target_repo.create_label(src.name, color_value(src.color),
+                                                 src.description or '')
+        except github3.exceptions.GitHubException as e:
+            print(f"    !! Failed to create label '{src.name}': {e}")
+            print("    Labels created or updated before this error were kept.")
+            sys.exit(1)
+        if new_label is None:
+            print(f"    !! Failed to create label '{src.name}': no label returned")
+            print("    Labels created or updated before this error were kept.")
+            sys.exit(1)
+        cache[label_key(new_label.name)] = new_label
+        # Label writes: sleep to stay below Github's rate limits
+        time.sleep(1)
+
+    for src, tgt, changes in to_update:
+        print(f"  - Updating label '{tgt.name}' ({', '.join(changes)})")
+        try:
+            # Keep the name of the target label, only color and description sync
+            ok = tgt.update(tgt.name, color_value(src.color), src.description or '')
+        except github3.exceptions.GitHubException as e:
+            print(f"    !! Failed to update label '{tgt.name}': {e}")
+            print("    Labels created or updated before this error were kept.")
+            sys.exit(1)
+        if not ok:
+            print(f"    !! Failed to update label '{tgt.name}': the update was rejected")
+            print("    Labels created or updated before this error were kept.")
+            sys.exit(1)
+        # Label writes: sleep to stay below Github's rate limits
+        time.sleep(1)
+
+    unchanged = len(source_labels) - len(to_create) - len(to_update)
+    print(f"Label cloning finished: {len(to_create)} created, "
+          f"{len(to_update)} updated, {unchanged} unchanged.")
 
 
 def clone_milestones(source_repo, target_repo):
@@ -144,7 +336,7 @@ def clone_milestones(source_repo, target_repo):
         return milestone_map # Return whatever we managed to map
 
 
-def create_issues(target_repo, issues_list, selection_label, whitelist_labels, milestone_map):
+def create_issues(target_repo, issues_list, selection_label, attach_labels, milestone_map):
     """Creates issues in the target repository based on the source list."""
     print(f"\nStarting creation of {len(issues_list)} issues in '{target_repo.full_name}'...")
     created_count = 0
@@ -153,18 +345,18 @@ def create_issues(target_repo, issues_list, selection_label, whitelist_labels, m
     for issue in issues_list:
         print(f"\nProcessing source issue #{issue['number']}: '{issue['title']}'")
 
-        # 1. Ensure labels exist
-        create_labels(target_repo, issue['labels'], selection_label, whitelist_labels)
+        # Ensure labels exist
+        selected_labels = select_labels(issue['labels'], selection_label, attach_labels)
+        create_labels(target_repo, selected_labels)
 
-        # 2. Prepare labels list for new issue
-        target_labels_names = []
-        for l in issue['labels']:
-            if l.name == selection_label or len(whitelist_labels) == 0 or l.name in whitelist_labels:
-                target_labels_names.append(l.name)
-        
-        print(f"  - Using labels: {', '.join(target_labels_names) if target_labels_names else 'None'}")
+        # Prepare labels list for new issue (spelling of the target labels)
+        target_labels_names = [target_labels_cache[label_key(l.name)].name
+                               for l in selected_labels]
 
-        # 3. Prepare milestone number
+        quoted_names = ", ".join("'" + n + "'" for n in target_labels_names)
+        print(f"  - Using labels: {quoted_names if quoted_names else 'None'}")
+
+        # Prepare milestone number
         target_milestone_number = None
         if issue['milestone']:
             source_ms_number = issue['milestone'].number
@@ -176,7 +368,7 @@ def create_issues(target_repo, issues_list, selection_label, whitelist_labels, m
                 print(f"  - Warning: Source milestone '{issue['milestone'].title}' (Number: {source_ms_number}) "
                       f"was not found or cloned to target. Skipping assignment.")
 
-        # 4. Create the issue
+        # Create the actual issue
         try:
             new_issue = target_repo.create_issue(
                 title=issue['title'],
@@ -189,7 +381,7 @@ def create_issues(target_repo, issues_list, selection_label, whitelist_labels, m
             created_count += 1
             batch_count += 1
 
-            # 5. Rate Limiting
+            # Avoid Rate Limiting
             if batch_count >= 10:
                 print('\nSleeping for 60 seconds to avoid Github\'s secondary rate limit...')
                 time.sleep(60)
@@ -197,7 +389,6 @@ def create_issues(target_repo, issues_list, selection_label, whitelist_labels, m
 
         except github3.exceptions.GitHubException as e:
             print(f"  !! Failed to create issue '{issue['title']}': {e}")
-            # Consider exiting or continuing. Exiting for now to match original script style.
             sys.exit(1)
 
     return created_count
@@ -255,10 +446,18 @@ if __name__ == '__main__':
         print(f'Error opening the target repository: {e}')
         sys.exit(1)
 
-    # Parse whitelist
-    whitelist = [w.strip() for w in args.whitelist.split(',') if w.strip()]
-    if whitelist:
-        print(f"Using label whitelist: {whitelist}")
+    # Fetch the labels once, validate before any write happens
+    source_labels = fetch_labels(source_repo)
+    target_cache = get_target_labels_cache(target_repo, fetch_labels(target_repo))
+    validate_attach_labels(args.attach_labels_list, args.label, source_labels,
+                           target_cache)
+
+    # Perform the copy of labels (if requested)
+    if args.clone_labels:
+        print("\n-- Label Cloning Enabled --")
+        clone_labels(source_repo, target_repo, source_labels)
+    else:
+        print("\n-- Label Cloning Disabled --")
 
     # Perform the copy of milestones (if requested)
     milestone_map_data = {} # Initialize empty map
@@ -275,6 +474,6 @@ if __name__ == '__main__':
         print("\nNo issues matching the criteria found. Exiting.")
         sys.exit(0)
 
-    num_created = create_issues(target_repo, source_issues_list, args.label, whitelist, milestone_map_data)
+    num_created = create_issues(target_repo, source_issues_list, args.label, args.attach_labels_list, milestone_map_data)
 
     print(f'\nFinished. Copied {num_created} tasks.')
