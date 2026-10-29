@@ -4,9 +4,10 @@ This is a simple tool for copying tasks (Github issue) from one Github repositor
 the intention to use Github issues for tracking tasks related to PostgreSQL Conferencce Europe, where there are a 
 subset of tasks that occur for each annual event. 
 
-The tool will copy issue titles, the body (description), milestones if enabled, the label used to the issues (as example "annual"), and any other
-labels listed in `--attach-labels` (or all labels of the issue, with `--attach-labels all`). Optionally all labels of the source repository
-can be cloned to the target repository first (`--clone-labels`).
+The tool will copy issue titles, the body (description), milestones if enabled, the label used to the issues
+(as example "annual"), and any other labels listed in `--attach-labels` (or all labels of the issue,
+with `--attach-labels all`). Optionally all labels of the source repository can be cloned to the target
+repository first (`--clone-labels`). Task list items in the issue body are copied unchecked.
 
 ## Dependency
 

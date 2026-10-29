@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 #
 # This tool will clone Github issues (titles, bodies, and selected labels) from
-# one repository to another. Optionally it also clones the repository labels
-# (--clone-labels) and milestones (--clone-milestones).
+# one repository to another, task list items in the bodies are copied unchecked.
+# Optionally it also clones the repository labels (--clone-labels) and
+# milestones (--clone-milestones).
 #
 
 import argparse
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -336,6 +338,48 @@ def clone_milestones(source_repo, target_repo):
         return milestone_map # Return whatever we managed to map
 
 
+# A checked task list item: indentation and blockquote markers, a list marker,
+# then "[x]". Group 1 is everything up to and including the opening bracket,
+# group 2 the closing bracket. Only [ \t] is used, a "\r" must never match.
+CHECKED_TASK_RE = re.compile(r'^([ \t>]*(?:[-*+]|\d{1,9}[.)])[ \t]+\[)[xX](\])(?=[ \t])')
+
+
+def deselect_tasks(body):
+    """Unchecks all task list items in an issue body, except inside fenced
+    code blocks. Returns the new body and the number of items changed.
+    Indented code blocks and fences opened on a list marker line are not
+    detected."""
+    lines = body.split('\n')
+    count = 0
+    fence_char = None # Fence character while inside a fence, else None
+    fence_is_tasklist = False
+
+    for n, line in enumerate(lines):
+        stripped = line.lstrip(' \t>')
+        is_fence = stripped.startswith('```') or stripped.startswith('~~~')
+
+        if fence_char is not None:
+            if is_fence and stripped[0] == fence_char:
+                fence_char = None
+                continue
+            if not fence_is_tasklist:
+                continue
+        elif is_fence:
+            info = stripped.lstrip(stripped[0]).strip()
+            # A backtick fence cannot have a backtick in its info string
+            if stripped[0] == '`' and '`' in info:
+                pass
+            else:
+                fence_char = stripped[0]
+                fence_is_tasklist = (info == '[tasklist]')
+                continue
+
+        lines[n], changed = CHECKED_TASK_RE.subn(r'\1 \2', line)
+        count += changed
+
+    return '\n'.join(lines), count
+
+
 def create_issues(target_repo, issues_list, selection_label, attach_labels, milestone_map):
     """Creates issues in the target repository based on the source list."""
     print(f"\nStarting creation of {len(issues_list)} issues in '{target_repo.full_name}'...")
@@ -368,11 +412,16 @@ def create_issues(target_repo, issues_list, selection_label, attach_labels, mile
                 print(f"  - Warning: Source milestone '{issue['milestone'].title}' (Number: {source_ms_number}) "
                       f"was not found or cloned to target. Skipping assignment.")
 
+        # Task list items start unchecked in the copy
+        new_body, deselected = deselect_tasks(issue['body'])
+        if deselected > 0:
+            print(f"  - Deselected {deselected} task(s)")
+
         # Create the actual issue
         try:
             new_issue = target_repo.create_issue(
                 title=issue['title'],
-                body=issue['body'],
+                body=new_body,
                 labels=target_labels_names if target_labels_names else None,
                 milestone=target_milestone_number
                 # Assignees are not supported directly in create_issue with github3.py
