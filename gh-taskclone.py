@@ -352,6 +352,7 @@ def deselect_tasks(body):
     lines = body.split('\n')
     count = 0
     fence_char = None # Fence character while inside a fence, else None
+    fence_len = 0 # Length of the opening fence run
     fence_is_tasklist = False
 
     for n, line in enumerate(lines):
@@ -359,9 +360,13 @@ def deselect_tasks(body):
         is_fence = stripped.startswith('```') or stripped.startswith('~~~')
 
         if fence_char is not None:
+            # A closing fence uses the same character, a run at least as long
+            # as the opening one, and nothing else on the line
             if is_fence and stripped[0] == fence_char:
-                fence_char = None
-                continue
+                run = len(stripped) - len(stripped.lstrip(fence_char))
+                if run >= fence_len and not stripped[run:].strip():
+                    fence_char = None
+                    continue
             if not fence_is_tasklist:
                 continue
         elif is_fence:
@@ -371,6 +376,7 @@ def deselect_tasks(body):
                 pass
             else:
                 fence_char = stripped[0]
+                fence_len = len(stripped) - len(stripped.lstrip(fence_char))
                 fence_is_tasklist = (info == '[tasklist]')
                 continue
 
