@@ -171,6 +171,17 @@ Processing source issue #75: 'Create dynamic tag for distributing t-shirts at th
 Finished. Copied 66 tasks.
 ```
 
+## Tests
+
+The unit tests mock the Github API, so they need no token or network access:
+
+```bash
+pip install -r requirements.txt
+python3 -m unittest discover -s tests
+```
+
+They run on every pull request, and on every push to `main`.
+
 ## Add tasks to Project
 
 Go into the repository, click on `Issues`, select all newly created Issues. Then click on *Projects* and assign the Issues to your Project. The Issues will show up in the first column of the Project dashboard.
