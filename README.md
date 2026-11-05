@@ -1,18 +1,20 @@
 # gh-taskclone
 
-This is a simple tool for copying tasks (Github issue) from one Github repository to another. This was born from 
-the intention to use Github issues for tracking tasks related to PostgreSQL Conferencce Europe, where there are a 
-subset of tasks that occur for each annual event. 
+[![Unit tests](https://github.com/dpage/gh-taskclone/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/dpage/gh-taskclone/actions/workflows/tests.yml)
 
-The tool will copy issue titles, the body (description), milestones if enabled, the label used to the issues
-(as example "annual"), and any other labels listed in `--attach-labels` (or all labels of the issue,
+This is a simple tool for copying tasks (GitHub issues) from one GitHub repository to another. It was born from
+the intention to use GitHub issues for tracking tasks related to PostgreSQL Conference Europe, where there is a
+subset of tasks that occur for each annual event.
+
+The tool will copy issue titles, the body (description), milestones if enabled, the label used to select the issues
+(for example `annual`), and any other labels listed in `--attach-labels` (or all labels of the issue,
 with `--attach-labels all`). Optionally all labels of the source repository can be cloned to the target
 repository first (`--clone-labels`). Task list items in the issue body are copied unchecked.
 
-## Dependency
+## Dependencies
 
 ```bash
-pip install github3.py
+pip install -r requirements.txt
 ```
 
 ## Usage
@@ -43,7 +45,7 @@ options:
                         source issue. If omitted, only the selection label is attached.
 ```
 
-Note: `SOURCE_OWNER` and `TARGET_OWNER` is the owner of the repository (the part after `github.com`), not necessarily your own username.
+Note: `SOURCE_OWNER` and `TARGET_OWNER` are the owners of the repositories (the part after `github.com/` in the URL), not necessarily your own username.
 
 ## Labels
 
@@ -51,9 +53,9 @@ Note: `SOURCE_OWNER` and `TARGET_OWNER` is the owner of the repository (the part
 * `--attach-labels venue,party` attaches these labels (if the source issue carries them), in addition to the selection label. Listing the selection label is accepted.
 * `--attach-labels all` attaches all labels of the source issue. `all` (in any case) cannot be combined with other labels.
 * Label names are matched case-insensitively.
-* `--clone-labels` clones all labels of the source repository, independent of `--label` and `--attach-labels`. Missing labels are created (name, color, description), for labels existing in both repositories color and description are overwritten from the source. Labels which exist only in the target are left alone, labels are never deleted. Any failure while cloning labels stops the script; labels handled before the failure are kept.
+* `--clone-labels` clones all labels of the source repository, independent of `--label` and `--attach-labels`. Missing labels are created (name, color, description); for labels existing in both repositories color and description are overwritten from the source. Labels which exist only in the target are left alone; labels are never deleted. Any failure while cloning labels stops the script; labels handled before the failure are kept.
 * Before anything is written, all labels listed in `--attach-labels` are checked. A label must exist in the source or the target repository, otherwise (for example a typo) the script exits without changes. A listed label which exists only in the source is created in the target when an issue carrying it is copied, with or without `--clone-labels`.
-* Comma limitation: Github allows commas in label names, but `--attach-labels` is a comma separated list and can not express them. If a listed name is missing and is part of such a label, the script exits with an error. Use `--attach-labels all` in this case.
+* Comma limitation: GitHub allows commas in label names, but `--attach-labels` is a comma separated list and cannot express them. If a listed name is missing and is part of such a label, the script exits with an error. Use `--attach-labels all` in this case.
 * Arguments are checked right after parsing, before any network access: an empty value (`""`, `" "`, `,`), and `all` combined with other labels fail with a usage message (exit code 2).
 
 ## Examples
@@ -155,6 +157,7 @@ Found 2 milestones in 'ImTheKai/gh-issue-copy-test'.
   - Creating milestone 'CfP opens'...
     -> Created milestone number 6.
   - Creating milestone 'CfS opens'...
+...
 Milestone cloning process finished.
 
 Fetching issues from 'pgeu/pgconfde2025' with label 'annual'...
@@ -173,7 +176,7 @@ Finished. Copied 66 tasks.
 
 ## Tests
 
-The unit tests mock the Github API, so they need no token or network access:
+The unit tests mock the GitHub API, so they need no token or network access:
 
 ```bash
 pip install -r requirements.txt
@@ -182,11 +185,11 @@ python3 -m unittest discover -s tests
 
 They run on every pull request, and on every push to `main`.
 
-## Add tasks to Project
+## Add tasks to a project
 
-Go into the repository, click on `Issues`, select all newly created Issues. Then click on *Projects* and assign the Issues to your Project. The Issues will show up in the first column of the Project dashboard.
+Go into the repository, click on `Issues`, select all newly created issues. Then click on *Projects* and assign the issues to your project. The issues will show up in the first column of the project board.
 
 ## Authentication
 
-The script needs to authenticate with Github, for which a Personal Access Token is required. This can either be stored
-as a single line in ```~/.github-token```, or exported in the ```GITHUB_TOKEN``` environment variable.
+The script needs to authenticate with GitHub, for which a personal access token is required. This can either be stored
+as a single line in `~/.github-token`, or exported in the `GITHUB_TOKEN` environment variable.
