@@ -910,6 +910,12 @@ class TestDiffProjectFields(TestCase):
         self.assertEqual(len(plan['conflicts']), 1)
         self.assertIn("'Due date'", plan['conflicts'][0])
 
+    def test_duplicate_source_field_names(self):
+        plan = self.diff([field('Due date'), field('due DATE')], [field('Due date')])
+        self.assertEqual(len(plan['conflicts']), 1)
+        self.assertIn("'Due date'", plan['conflicts'][0])
+        self.assertIn('source project 2', plan['conflicts'][0])
+
     def test_duplicate_fields_not_copied_are_ignored(self):
         plan = self.diff([field('Due date')], [field('Due date'), field('Foo'), field('foo')])
         self.assertEqual(plan['conflicts'], [])

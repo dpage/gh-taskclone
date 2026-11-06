@@ -687,6 +687,11 @@ def diff_project_fields(source_project, target_project):
         if not sources:
             plan['skipped'].append(name)
             continue
+        if len(sources) > 1:
+            plan['conflicts'].append(f"Field '{name}' exists more than once in "
+                                     f"{source_desc} (names are matched "
+                                     f"case-insensitively).")
+            continue
         src = sources[0]
         if src['type'] != expected:
             plan['conflicts'].append(f"Field '{name}' in {source_desc} has the "
