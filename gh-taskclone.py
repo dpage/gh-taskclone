@@ -563,6 +563,17 @@ def run_mutation(session, query, variables):
     return data
 
 
+def mutate_or_exit(session, query, variables, what):
+    """Runs a mutation during the field cloning. On failure, reports 'what'
+    failed and exits: changes made before the error were kept."""
+    try:
+        return run_mutation(session, query, variables)
+    except GraphQLError as e:
+        print(f"    !! Failed to {what}: {e}")
+        print("    Changes made before this error were kept.")
+        sys.exit(1)
+
+
 def fetch_project(session, owner, number):
     """Fetches a project (id, title, url, fields, number of items) of an
     organization or a user. Exits if it cannot be accessed. No writes."""
@@ -808,12 +819,8 @@ def clone_project(session, plan, target_project):
             print(f"  - Field '{status['name']}' is unchanged.")
 
         if query is not None:
-            try:
-                run_mutation(session, query, variables)
-            except GraphQLError as e:
-                print(f"    !! Failed to clone field '{status['name']}': {e}")
-                print("    Changes made before this error were kept.")
-                sys.exit(1)
+            mutate_or_exit(session, query, variables,
+                           f"clone field '{status['name']}'")
             details = []
             if status['created']:
                 details.append(f"{status['created']} created")
@@ -826,14 +833,10 @@ def clone_project(session, plan, target_project):
 
     for name in plan['date_fields']:
         print(f"  - Creating field '{name}'")
-        try:
-            run_mutation(session, CREATE_FIELD_MUTATION,
-                         {'input': {'projectId': target_project['id'],
-                                    'dataType': 'DATE', 'name': name}})
-        except GraphQLError as e:
-            print(f"    !! Failed to create field '{name}': {e}")
-            print("    Changes made before this error were kept.")
-            sys.exit(1)
+        mutate_or_exit(session, CREATE_FIELD_MUTATION,
+                       {'input': {'projectId': target_project['id'],
+                                  'dataType': 'DATE', 'name': name}},
+                       f"create field '{name}'")
     if plan['date_fields']:
         n = len(plan['date_fields'])
         parts.append(f"{n} field{'s' if n != 1 else ''} created")
