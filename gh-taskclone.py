@@ -69,7 +69,7 @@ def read_command_line():
                              "or full URL) to clone the Status options and "
                              "the 'Start date' and 'Due date' fields from "
                              "into --target-project. Requires "
-                             "--target-project. Default: False")
+                             "--target-project. Default: no project")
     parser.add_argument("--allow-status-replace", action="store_true",
                         help="Required when --clone-project changes the "
                              "Status options of a target project which "
