@@ -66,16 +66,16 @@ Note: `SOURCE_OWNER` and `TARGET_OWNER` are the owners of the repositories (the 
 Only the selection label is attached:
 
 ```bash
-$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner dpage --target-repo gh-tc-target --target-owner dpage
+$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner pgeu --target-repo gh-tc-target --target-owner pgeu
 ...
 -- Label Cloning Disabled --
 
 -- Milestone Cloning Disabled --
 
-Fetching issues from 'dpage/gh-tc-source' with label 'annual'...
+Fetching issues from 'pgeu/gh-tc-source' with label 'annual'...
 Found 3 issues.
 
-Starting creation of 3 issues in 'dpage/gh-tc-target'...
+Starting creation of 3 issues in 'pgeu/gh-tc-target'...
 
 Processing source issue #3: 'Find a party venue'
   Creating label 'annual'
@@ -89,12 +89,12 @@ Finished. Copied 3 tasks.
 Attach additional labels, and clone all labels first:
 
 ```bash
-$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner dpage --target-repo gh-tc-target --target-owner dpage --clone-labels --attach-labels "venue,party"
+$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner pgeu --target-repo gh-tc-target --target-owner pgeu --clone-labels --attach-labels "venue,party"
 ...
 -- Label Cloning Enabled --
 
 Attempting to clone labels...
-Found 9 labels in 'dpage/gh-tc-source'.
+Found 9 labels in 'pgeu/gh-tc-source'.
   - Creating label 'party'
   - Creating label 'good first issue'
   - Updating label 'venue' (color 'ededed' -> 'fbca04', description)
@@ -111,7 +111,7 @@ Finished. Copied 3 tasks.
 Attach all labels of the source issues:
 
 ```bash
-$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner dpage --target-repo gh-tc-target --target-owner dpage --attach-labels all
+$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner pgeu --target-repo gh-tc-target --target-owner pgeu --attach-labels all
 ...
 Processing source issue #2: 'Review AV requirements'
   Creating label 'av'
@@ -125,7 +125,7 @@ Finished. Copied 3 tasks.
 A label which exists in neither repository fails before any change is made:
 
 ```bash
-$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner dpage --target-repo gh-tc-target --target-owner dpage --attach-labels "venu,party"
+$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner pgeu --target-repo gh-tc-target --target-owner pgeu --attach-labels "venu,party"
 ...
 Found 1 labels in target.
 Error: these labels given in --attach-labels exist in neither the source nor the target repository: 'venu'
@@ -229,9 +229,9 @@ The tool works with the current GitHub Projects (the board and table ones at `gi
 Add the issues to project 3:
 
 ```bash
-$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner dpage --target-repo gh-tc-target --target-owner dpage --target-project 3
+$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner pgeu --target-repo gh-tc-target --target-owner pgeu --target-project 3
 ...
-Accessing project 3 of 'dpage'...
+Accessing project 3 of 'pgeu'...
 Found project 'Annual tasks' with 0 items.
 
 -- Label Cloning Disabled --
@@ -252,9 +252,9 @@ Finished. Copied 3 tasks.
 Clone the Status columns and date fields of another project first, with the project given as URL:
 
 ```bash
-$ python3 gh-taskclone.py --source-repo pgconfde2025 --source-owner pgeu --target-repo gh-issue-copy-test --target-owner dpage --target-project https://github.com/orgs/dpage/projects/3 --clone-project 2
+$ python3 gh-taskclone.py --source-repo pgconfde2025 --source-owner pgeu --target-repo gh-issue-copy-test --target-owner pgeu --target-project https://github.com/orgs/pgeu/projects/3 --clone-project 2
 ...
-Accessing project 3 of 'dpage'...
+Accessing project 3 of 'pgeu'...
 Found project 'Annual tasks' with 0 items.
 Accessing project 2 of 'pgeu'...
 Found project 'Conference' with 12 items.
@@ -277,33 +277,33 @@ Processing source issue #75: 'Create dynamic tag for distributing t-shirts at th
 A project which does not exist, or which the token cannot access, fails before any change is made:
 
 ```bash
-$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner dpage --target-repo gh-tc-target --target-owner dpage --target-project 9
+$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner pgeu --target-repo gh-tc-target --target-owner pgeu --target-project 9
 ...
-Accessing project 9 of 'dpage'...
-Error: project 9 of 'dpage' was not found or is not accessible. The project may not exist, or the token may lack access to it: the token needs the 'project' scope (classic token) or the Projects read/write permission (fine-grained token).
+Accessing project 9 of 'pgeu'...
+Error: project 9 of 'pgeu' was not found or is not accessible. The project may not exist, or the token may lack access to it: the token needs the 'project' scope (classic token) or the Projects read/write permission (fine-grained token).
 No changes were made.
 ```
 
 If the Status options of a target project which contains items would change, the script refuses:
 
 ```bash
-$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner dpage --target-repo gh-tc-target --target-owner dpage --target-project 3 --clone-project 2
+$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner pgeu --target-repo gh-tc-target --target-owner pgeu --target-project 3 --clone-project 2
 ...
-Accessing project 3 of 'dpage'...
+Accessing project 3 of 'pgeu'...
 Found project 'Annual tasks' with 14 items.
-Accessing project 2 of 'dpage'...
+Accessing project 2 of 'pgeu'...
 Found project 'Conference' with 12 items.
-Error: the Status options of the target project 3 of 'dpage' would change, and it contains 14 items. The update may drop the Status value of existing items. Use --allow-status-replace to do it anyway.
+Error: the Status options of the target project 3 of 'pgeu' would change, and it contains 14 items. The update may drop the Status value of existing items. Use --allow-status-replace to do it anyway.
 No changes were made.
 ```
 
 The same run with `--allow-status-replace` prints a warning and continues:
 
 ```bash
-$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner dpage --target-repo gh-tc-target --target-owner dpage --target-project 3 --clone-project 2 --allow-status-replace
+$ python3 gh-taskclone.py --source-repo gh-tc-source --source-owner pgeu --target-repo gh-tc-target --target-owner pgeu --target-project 3 --clone-project 2 --allow-status-replace
 ...
 Found project 'Conference' with 12 items.
-Warning: the Status options of the target project 3 of 'dpage' are replaced, the 14 existing items may lose their Status value (--allow-status-replace).
+Warning: the Status options of the target project 3 of 'pgeu' are replaced, the 14 existing items may lose their Status value (--allow-status-replace).
 ...
 Project cloning finished: Status 5 options (2 created, 1 updated).
 ...
