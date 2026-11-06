@@ -420,7 +420,8 @@ query($owner: String!, $number: Int!) {
         id
         title
         url
-        items(first: 1) { totalCount }
+        # Archived items are left out by default, but they keep their Status
+        items(first: 1, archivedStates: [ARCHIVED, NOT_ARCHIVED]) { totalCount }
         fields(first: 100) {
           nodes {
             ... on ProjectV2FieldCommon { id name dataType }

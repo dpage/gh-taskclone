@@ -710,6 +710,16 @@ class TestFetchProject(TestCase):
         self.assertEqual(result['fields'][0]['options'][0]['name'], 'Todo')
         self.assertEqual(result['fields'][1]['options'], [])
 
+    def test_item_count_includes_archived_items(self):
+        # Verified against the real API: items() without archivedStates skips
+        # archived items (1 of 2 items), the guard needs all of them
+        session = fake_session(fake_response(data=project_data(3, 2)))
+        result = gtc.fetch_project(session, 'o', 3)
+        query = session.post.call_args.kwargs['json']['query']
+        self.assertRegex(query, r'items\(first: 1, archivedStates: \[ARCHIVED, NOT_ARCHIVED\]\)'
+                                r' \{ totalCount \}')
+        self.assertEqual(result['item_count'], 2)
+
     def check_not_found(self, response):
         self.assertExits(gtc.fetch_project, fake_session(response), 'myowner', 7)
         out = self.out.getvalue()
