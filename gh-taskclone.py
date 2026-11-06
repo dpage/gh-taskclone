@@ -3,7 +3,10 @@
 # This tool will clone Github issues (titles, bodies, and selected labels) from
 # one repository to another, task list items in the bodies are copied unchecked.
 # Optionally it also clones the repository labels (--clone-labels) and
-# milestones (--clone-milestones).
+# milestones (--clone-milestones), adds the copies to a Github Project
+# (--target-project), and clones the Status columns and the "Start date" and
+# "Due date" fields of another Project (--clone-project). Projects (v2) are only
+# available through the GraphQL API.
 #
 
 import argparse
@@ -26,8 +29,9 @@ def parse_label_list(value):
 def read_command_line():
     """Read the command line arguments."""
     parser = argparse.ArgumentParser(
-        description='Copy tasks (issues) from one Github project to another, '
-                    'optionally including labels and milestones.')
+        description='Copy tasks (issues) from one Github repository to another, '
+                    'optionally including labels, milestones and Github '
+                    'Project settings.')
     parser.add_argument("--source-repo", required=True,
                         help="the source repo name")
     parser.add_argument("--source-owner", required=True,
@@ -54,6 +58,24 @@ def read_command_line():
                              "label), or 'all' to attach all labels of the "
                              "source issue. If omitted, only the selection "
                              "label is attached.")
+    parser.add_argument("--target-project", default=None,
+                        help="a Github Project (v2) of --target-owner to add "
+                             "the copied issues to: the project number, or "
+                             "the full project URL (for example "
+                             "https://github.com/orgs/OWNER/projects/3). "
+                             "Default: no project")
+    parser.add_argument("--clone-project", default=None,
+                        help="a Github Project (v2) of --source-owner (number "
+                             "or full URL) to clone the Status options and "
+                             "the 'Start date' and 'Due date' fields from "
+                             "into --target-project. Requires "
+                             "--target-project. Default: no project")
+    parser.add_argument("--allow-status-replace", action="store_true",
+                        help="Required when --clone-project changes the "
+                             "Status options of a target project which "
+                             "already contains items: the update may drop the "
+                             "Status value of these items. Requires "
+                             "--clone-project. Default: False")
 
     args = parser.parse_args()
 
@@ -68,6 +90,28 @@ def read_command_line():
                          "(or 'all')")
         if 'all' in args.attach_labels_list and len(args.attach_labels_list) > 1:
             parser.error("'all' in --attach-labels cannot be combined with other labels")
+
+    # Project arguments, resolved to project numbers
+    for option, owner, attr in (
+            ('target_project', args.target_owner, 'target_project_number'),
+            ('clone_project', args.source_owner, 'clone_project_number')):
+        setattr(args, attr, None)
+        ref = getattr(args, option)
+        if ref is None:
+            continue
+        try:
+            setattr(args, attr, parse_project_ref(ref, owner))
+        except ValueError as e:
+            parser.error(f"--{option.replace('_', '-')}: {e}")
+    if args.clone_project is not None and args.target_project is None:
+        parser.error("--clone-project requires --target-project")
+    if (args.clone_project is not None
+            and args.source_owner.lower() == args.target_owner.lower()
+            and args.clone_project_number == args.target_project_number):
+        parser.error("--clone-project and --target-project are the same "
+                     "project, source and target project must differ")
+    if args.allow_status_replace and args.clone_project is None:
+        parser.error("--allow-status-replace requires --clone-project")
 
     return args
 
@@ -338,6 +382,477 @@ def clone_milestones(source_repo, target_repo):
         return milestone_map # Return whatever we managed to map
 
 
+# ---------------------------------------------------------------------------
+# Projects (v2). github3.py only knows the retired classic projects, so all
+# project access goes through the GraphQL API.
+# ---------------------------------------------------------------------------
+
+GRAPHQL_URL = 'https://api.github.com/graphql'
+GRAPHQL_ATTEMPTS = 3 # Tries per call, the retry is for the rate limit only
+RATE_LIMIT_WAIT = 60 # Seconds to wait when Github does not say how long
+
+PROJECT_PERMISSION_HINT = ("the token needs the 'project' scope (classic token) "
+                           "or the Projects read/write permission "
+                           "(fine-grained token)")
+
+# One anchored expression for the project URL: owner and number, an optional
+# /views/<m> suffix, an optional trailing slash and an optional query string.
+PROJECT_URL_RE = re.compile(
+    r'^https://github\.com/(?:orgs|users)/([A-Za-z0-9-]+)/projects/([0-9]+)'
+    r'(?:/views/[0-9]+)?/?(?:\?[^\s#]*)?$', re.IGNORECASE)
+
+# The fields cloned by --clone-project, with the type they must have
+PROJECT_FIELDS = (('Status', 'SINGLE_SELECT'),
+                  ('Start date', 'DATE'),
+                  ('Due date', 'DATE'))
+
+# The fields are listed with the interface fields, so that fields of every
+# type (also iteration fields) can be read. A project has far fewer than 100
+# fields, so there is no pagination.
+PROJECT_QUERY = """
+query($owner: String!, $number: Int!) {
+  repositoryOwner(login: $owner) {
+    ... on ProjectV2Owner {
+      projectV2(number: $number) {
+        id
+        title
+        url
+        # Archived items are left out by default, but they keep their Status
+        items(first: 1, archivedStates: [ARCHIVED, NOT_ARCHIVED]) { totalCount }
+        fields(first: 100) {
+          nodes {
+            ... on ProjectV2FieldCommon { id name dataType }
+            ... on ProjectV2SingleSelectField {
+              options { id name color description }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+CREATE_FIELD_MUTATION = """
+mutation($input: CreateProjectV2FieldInput!) {
+  createProjectV2Field(input: $input) {
+    projectV2Field { ... on ProjectV2FieldCommon { id name } }
+  }
+}
+"""
+
+UPDATE_FIELD_MUTATION = """
+mutation($input: UpdateProjectV2FieldInput!) {
+  updateProjectV2Field(input: $input) {
+    projectV2Field { ... on ProjectV2FieldCommon { id name } }
+  }
+}
+"""
+
+ADD_ITEM_MUTATION = """
+mutation($input: AddProjectV2ItemByIdInput!) {
+  addProjectV2ItemById(input: $input) {
+    item { id }
+  }
+}
+"""
+
+
+class GraphQLError(Exception):
+    """A failed GraphQL call. error_types holds the 'type' of each error
+    entry returned by Github (for example 'NOT_FOUND')."""
+
+    def __init__(self, message, error_types=()):
+        super().__init__(message)
+        self.error_types = list(error_types)
+
+
+def name_key(name):
+    """Normalized project field or option name: matched case-insensitively."""
+    return name.lower()
+
+
+def parse_project_ref(value, expected_owner):
+    """Returns the project number (int) for a project number or a project URL
+    of expected_owner. Raises ValueError with a message otherwise. No API
+    calls."""
+    text = value.strip()
+    if re.fullmatch(r'[0-9]+', text):
+        number = int(text)
+    else:
+        match = PROJECT_URL_RE.match(text)
+        if not match:
+            raise ValueError(f"'{value}' is neither a project number nor a "
+                             f"project URL like "
+                             f"https://github.com/orgs/OWNER/projects/3")
+        if match.group(1).lower() != expected_owner.lower():
+            raise ValueError(f"the project URL '{value}' does not point to a "
+                             f"project of '{expected_owner}'")
+        number = int(match.group(2))
+    if number < 1:
+        raise ValueError(f"'{value}': the project number must be greater than 0")
+    return number
+
+
+def retry_wait(response):
+    """Seconds to wait before retrying a rate limited request."""
+    try:
+        return max(int(response.headers.get('Retry-After')), 0)
+    except (TypeError, ValueError):
+        return RATE_LIMIT_WAIT
+
+
+def graphql(session, query, variables=None):
+    """Runs a GraphQL query or mutation with the (token carrying) requests
+    session and returns the 'data' dict. Raises GraphQLError for HTTP errors,
+    invalid JSON and GraphQL errors (reported with HTTP 200). The only retry
+    is for Github's rate limits, at most GRAPHQL_ATTEMPTS attempts in total."""
+    for attempt in range(1, GRAPHQL_ATTEMPTS + 1):
+        try:
+            response = session.post(GRAPHQL_URL, json={'query': query,
+                                                       'variables': variables or {}})
+        except OSError as e:
+            raise GraphQLError(f"the request failed: {e}")
+
+        status = response.status_code
+        wait = None # Set when the request was rate limited
+        if status in (403, 429) and ('Retry-After' in response.headers
+                                     or 'rate limit' in response.text.lower()):
+            wait = retry_wait(response)
+        elif not 200 <= status < 300:
+            raise GraphQLError(f"HTTP status {status}: {response.text[:200]}")
+        else:
+            try:
+                payload = response.json()
+            except ValueError:
+                raise GraphQLError("the response is not valid JSON")
+            if not isinstance(payload, dict):
+                raise GraphQLError("the response is not valid GraphQL JSON")
+            errors = [e for e in payload.get('errors') or [] if isinstance(e, dict)]
+            if payload.get('errors') and not errors:
+                errors = [{'message': str(payload['errors'])}]
+            if any(e.get('type') == 'RATE_LIMITED' for e in errors):
+                wait = retry_wait(response)
+            elif errors:
+                raise GraphQLError("; ".join(e.get('message', 'unknown error')
+                                             for e in errors),
+                                   [e.get('type') for e in errors])
+            elif not isinstance(payload.get('data'), dict):
+                raise GraphQLError("the response contains no data")
+            else:
+                return payload['data']
+
+        if attempt == GRAPHQL_ATTEMPTS:
+            raise GraphQLError(f"Github's rate limit was still active after "
+                               f"{GRAPHQL_ATTEMPTS} attempts, repeat the run "
+                               f"later", ['RATE_LIMITED'])
+        # A rate limited request was normally not executed, so a retry is safe
+        # for addProjectV2ItemById (idempotent). createProjectV2Field is not
+        # idempotent: a retry after an ambiguous failure could end in a
+        # duplicate name error, which is fatal like any other error.
+        print(f"  Github rate limit reached, waiting {wait} seconds "
+              f"(attempt {attempt} of {GRAPHQL_ATTEMPTS})...")
+        time.sleep(wait)
+
+
+def run_mutation(session, query, variables):
+    """Runs a GraphQL mutation. Every mutation is a write: sleep to stay below
+    Github's secondary rate limit."""
+    data = graphql(session, query, variables)
+    time.sleep(1)
+    return data
+
+
+def mutate_or_exit(session, query, variables, what):
+    """Runs a mutation during the field cloning. On failure, reports 'what'
+    failed and exits: changes made before the error were kept."""
+    try:
+        return run_mutation(session, query, variables)
+    except GraphQLError as e:
+        print(f"    !! Failed to {what}: {e}")
+        print("    Changes made before this error were kept.")
+        sys.exit(1)
+
+
+def fetch_project(session, owner, number):
+    """Fetches a project (id, title, url, fields, number of items) of an
+    organization or a user. Exits if it cannot be accessed. No writes."""
+    print(f"Accessing project {number} of '{owner}'...")
+    node = None
+    try:
+        data = graphql(session, PROJECT_QUERY, {'owner': owner, 'number': number})
+        node = (data.get('repositoryOwner') or {}).get('projectV2')
+    except GraphQLError as e:
+        # A missing project and a missing permission both are NOT_FOUND
+        if not {'NOT_FOUND', 'FORBIDDEN', 'INSUFFICIENT_SCOPES'} & set(e.error_types):
+            print(f"Error fetching project {number} of '{owner}': {e}")
+            print("No changes were made.")
+            sys.exit(1)
+
+    if not node:
+        print(f"Error: project {number} of '{owner}' was not found or is not "
+              f"accessible. The project may not exist, or the token may lack "
+              f"access to it: {PROJECT_PERMISSION_HINT}.")
+        print("No changes were made.")
+        sys.exit(1)
+
+    fields = []
+    for f in (node.get('fields') or {}).get('nodes') or []:
+        if f and f.get('id'):
+            fields.append({'id': f['id'], 'name': f['name'],
+                           'type': f['dataType'], 'options': f.get('options') or []})
+    project = {'owner': owner, 'number': number, 'id': node['id'],
+               'title': node['title'], 'url': node['url'], 'fields': fields,
+               'item_count': node['items']['totalCount']}
+    print(f"Found project '{project['title']}' with {project['item_count']} items.")
+    return project
+
+
+def project_desc(role, project):
+    """Describes a project in messages: the source project 2 of 'owner'."""
+    return f"the {role} project {project['number']} of '{project['owner']}'"
+
+
+def find_fields(project, name):
+    """All fields of a project with this name (matched case-insensitively)."""
+    return [f for f in project['fields'] if name_key(f['name']) == name_key(name)]
+
+
+def duplicate_option_names(options):
+    """Names of options which are equal after normalization with an earlier one."""
+    seen = set()
+    duplicates = []
+    for o in options:
+        if name_key(o['name']) in seen:
+            duplicates.append(o['name'])
+        seen.add(name_key(o['name']))
+    return duplicates
+
+
+def same_options(a, b):
+    """True if two option lists are equal in order, names (normalized), colors
+    and descriptions (None and '' are equal)."""
+    if len(a) != len(b):
+        return False
+    return all(name_key(x['name']) == name_key(y['name'])
+               and x['color'] == y['color']
+               and (x['description'] or '') == (y['description'] or '')
+               for x, y in zip(a, b))
+
+
+def plan_status_options(source_field, target_field):
+    """Plans the Status options: all source options in source order, then the
+    options which exist only in the target in their existing order. For
+    matching options the source color and description win, the target keeps its
+    spelling of the name. target_field is None if the field is to be created."""
+    target_options = target_field['options'] if target_field else []
+    target_by_key = {name_key(o['name']): o for o in target_options}
+    source_keys = {name_key(o['name']) for o in source_field['options']}
+
+    final = []
+    created = updated = 0
+    for so in source_field['options']:
+        to = target_by_key.get(name_key(so['name']))
+        final.append({'name': to['name'] if to else so['name'],
+                      'color': so['color'],
+                      'description': so['description'] or ''})
+        if to is None:
+            created += 1
+        elif (to['color'] != so['color']
+              or (to['description'] or '') != (so['description'] or '')):
+            updated += 1
+    for to in target_options:
+        if name_key(to['name']) not in source_keys:
+            final.append({'name': to['name'], 'color': to['color'],
+                          'description': to['description'] or ''})
+
+    # Reordered: the options which already exist in the target change their
+    # relative order (new options in between do not count)
+    old_order = [name_key(o['name']) for o in target_options]
+    new_order = [name_key(o['name']) for o in final if name_key(o['name']) in target_by_key]
+    return {'name': target_field['name'] if target_field else source_field['name'],
+            'field_id': target_field['id'] if target_field else None,
+            'options': final,
+            'changes': target_field is None or not same_options(final, target_options),
+            'created': created,
+            'updated': updated,
+            'reordered': old_order != new_order}
+
+
+def diff_project_fields(source_project, target_project):
+    """Compares the fields cloned by --clone-project in both projects. Returns
+    the plan: 'status' (None, or the final option list, whether it changes
+    and the counts), 'date_fields' (names to create), 'skipped' (fields which
+    do not exist in the source), 'conflicts' and 'duplicates' (fatal problems,
+    as messages). No API calls, nothing is printed."""
+    plan = {'status': None, 'date_fields': [], 'skipped': [],
+            'conflicts': [], 'duplicates': []}
+    source_desc = project_desc('source', source_project)
+    target_desc = project_desc('target', target_project)
+
+    for name, expected in PROJECT_FIELDS:
+        sources = find_fields(source_project, name)
+        if not sources:
+            plan['skipped'].append(name)
+            continue
+        if len(sources) > 1:
+            plan['conflicts'].append(f"Field '{name}' exists more than once in "
+                                     f"{source_desc} (names are matched "
+                                     f"case-insensitively).")
+            continue
+        src = sources[0]
+        if src['type'] != expected:
+            plan['conflicts'].append(f"Field '{name}' in {source_desc} has the "
+                                     f"type {src['type']}, expected {expected}.")
+            continue
+
+        targets = find_fields(target_project, name)
+        if len(targets) > 1:
+            plan['conflicts'].append(f"Field '{name}' exists more than once in "
+                                     f"{target_desc} (names are matched "
+                                     f"case-insensitively).")
+            continue
+        tgt = targets[0] if targets else None
+        if tgt is not None and tgt['type'] != expected:
+            plan['conflicts'].append(f"Field '{name}' in {target_desc} has the "
+                                     f"type {tgt['type']}, expected {expected}.")
+            continue
+
+        if name != 'Status':
+            if tgt is None:
+                plan['date_fields'].append(src['name'])
+            continue
+
+        duplicates = False
+        for desc, field in ((source_desc, src), (target_desc, tgt)):
+            for dup in duplicate_option_names(field['options'] if field else []):
+                plan['duplicates'].append(f"Field '{name}' in {desc} has the "
+                                          f"option '{dup}' more than once "
+                                          f"(names are matched case-insensitively).")
+                duplicates = True
+        if not duplicates:
+            plan['status'] = plan_status_options(src, tgt)
+
+    return plan
+
+
+def check_project_plan(plan, target_project, allow_status_replace):
+    """Exits if the plan has conflicts or duplicate option names, or if it
+    changes the Status options of a target project which contains items
+    without --allow-status-replace. Run before any write happens."""
+    problems = plan['conflicts'] + plan['duplicates']
+    if problems:
+        print("Error: the project cannot be cloned:")
+        for problem in problems:
+            print(f"  - {problem}")
+        print("No changes were made.")
+        sys.exit(1)
+
+    status = plan['status']
+    if (status is None or status['field_id'] is None or not status['changes']
+            or target_project['item_count'] == 0):
+        return
+    # The API replaces the whole option list of a single select field, and the
+    # option input has no id field. Every option, including the kept ones, is
+    # therefore expected to get a new internal id, and the items already in the
+    # project are expected to lose their Status value (unverified).
+    if not allow_status_replace:
+        print(f"Error: the Status options of {project_desc('target', target_project)} "
+              f"would change, and it contains {target_project['item_count']} "
+              f"items. The update may drop the Status value of existing items. "
+              f"Use --allow-status-replace to do it anyway.")
+        print("No changes were made.")
+        sys.exit(1)
+    print(f"Warning: the Status options of {project_desc('target', target_project)} "
+          f"are replaced, the {target_project['item_count']} existing items may "
+          f"lose their Status value (--allow-status-replace).")
+
+
+def load_projects(session, args):
+    """Fetches the target project and, for --clone-project, the source project,
+    and validates the cloning plan. Makes no GraphQL call without
+    --target-project. Returns (target_project, plan), each None if not used.
+    No writes."""
+    if args.target_project_number is None:
+        return None, None
+
+    target_project = fetch_project(session, args.target_owner,
+                                   args.target_project_number)
+    if args.clone_project_number is None:
+        return target_project, None
+
+    source_project = fetch_project(session, args.source_owner,
+                                   args.clone_project_number)
+    plan = diff_project_fields(source_project, target_project)
+    check_project_plan(plan, target_project, args.allow_status_replace)
+    return target_project, plan
+
+
+def clone_project(session, plan, target_project):
+    """Clones the fields of the plan (see diff_project_fields) into the target
+    project. The plan is not recomputed. Any failure is fatal."""
+    print("\nAttempting to clone project fields...")
+    for name in plan['skipped']:
+        print(f"Field '{name}' does not exist in the source project, skipping.")
+
+    parts = []
+    status = plan['status']
+    if status is not None:
+        count = len(status['options'])
+        options = [{'name': o['name'], 'color': o['color'],
+                    'description': o['description']} for o in status['options']]
+        if status['field_id'] is None:
+            print(f"  - Creating field '{status['name']}' ({count} options)")
+            query = CREATE_FIELD_MUTATION
+            variables = {'input': {'projectId': target_project['id'],
+                                   'dataType': 'SINGLE_SELECT',
+                                   'name': status['name'],
+                                   'singleSelectOptions': options}}
+        elif status['changes']:
+            print(f"  - Replacing the options of field '{status['name']}' ({count} options)")
+            query = UPDATE_FIELD_MUTATION
+            # The complete final list in one call, in the final order
+            variables = {'input': {'fieldId': status['field_id'],
+                                   'singleSelectOptions': options}}
+        else:
+            query = None
+            print(f"  - Field '{status['name']}' is unchanged.")
+
+        if query is not None:
+            mutate_or_exit(session, query, variables,
+                           f"clone field '{status['name']}'")
+            details = []
+            if status['created']:
+                details.append(f"{status['created']} created")
+            if status['updated']:
+                details.append(f"{status['updated']} updated")
+            if status['reordered']:
+                details.append("reordered")
+            parts.append(f"Status {count} options" +
+                         (f" ({', '.join(details)})" if details else ""))
+
+    for name in plan['date_fields']:
+        print(f"  - Creating field '{name}'")
+        mutate_or_exit(session, CREATE_FIELD_MUTATION,
+                       {'input': {'projectId': target_project['id'],
+                                  'dataType': 'DATE', 'name': name}},
+                       f"create field '{name}'")
+    if plan['date_fields']:
+        n = len(plan['date_fields'])
+        parts.append(f"{n} field{'s' if n != 1 else ''} created")
+
+    print(f"Project cloning finished: {', '.join(parts) if parts else 'nothing to change'}.")
+
+
+def add_issue_to_project(session, project, new_issue):
+    """Adds a created issue to the project. Raises GraphQLError."""
+    node_id = new_issue.as_dict().get('node_id')
+    if not node_id:
+        raise GraphQLError("the created issue has no node_id")
+    run_mutation(session, ADD_ITEM_MUTATION,
+                 {'input': {'projectId': project['id'], 'contentId': node_id}})
+
+
 # A checked task list item: indentation and blockquote markers, a list marker,
 # then "[x]". Group 1 is everything up to and including the opening bracket,
 # group 2 the closing bracket. Only [ \t] is used, a "\r" must never match.
@@ -386,11 +901,15 @@ def deselect_tasks(body):
     return '\n'.join(lines), count
 
 
-def create_issues(target_repo, issues_list, selection_label, attach_labels, milestone_map):
-    """Creates issues in the target repository based on the source list."""
+def create_issues(target_repo, issues_list, selection_label, attach_labels, milestone_map,
+                  project=None, session=None):
+    """Creates issues in the target repository based on the source list. If a
+    project (see fetch_project) is given, each new issue is added to it, using
+    the GraphQL session."""
     print(f"\nStarting creation of {len(issues_list)} issues in '{target_repo.full_name}'...")
     created_count = 0
     batch_count = 0
+    copied = [] # Source issue numbers copied so far
 
     for issue in issues_list:
         print(f"\nProcessing source issue #{issue['number']}: '{issue['title']}'")
@@ -432,19 +951,35 @@ def create_issues(target_repo, issues_list, selection_label, attach_labels, mile
                 milestone=target_milestone_number
                 # Assignees are not supported directly in create_issue with github3.py
             )
-            print(f"  -> Successfully created issue #{new_issue.number}.")
-            created_count += 1
-            batch_count += 1
-
-            # Avoid Rate Limiting
-            if batch_count >= 10:
-                print('\nSleeping for 60 seconds to avoid Github\'s secondary rate limit...')
-                time.sleep(60)
-                batch_count = 0
-
         except github3.exceptions.GitHubException as e:
             print(f"  !! Failed to create issue '{issue['title']}': {e}")
             sys.exit(1)
+
+        print(f"  -> Successfully created issue #{new_issue.number}.")
+        created_count += 1
+        batch_count += 1
+        copied.append(issue['number'])
+
+        # Not part of the issue creation: a failure here has its own message
+        if project is not None:
+            try:
+                add_issue_to_project(session, project, new_issue)
+            except GraphQLError as e:
+                print(f"  !! Failed to add issue #{new_issue.number} (copy of source "
+                      f"issue #{issue['number']}) to project {project['number']}: {e}")
+                print("     The issue itself was created and is not rolled back.")
+                print("     Source issues copied in this run (including this one): " +
+                      ", ".join(f"#{n}" for n in copied))
+                print("     The script has no duplicate detection, a rerun would create "
+                      "these issues again. Exclude or remove them by hand first.")
+                sys.exit(1)
+            print(f"  -> Added to project '{project['title']}' (project {project['number']}).")
+
+        # Avoid Rate Limiting
+        if batch_count >= 10:
+            print('\nSleeping for 60 seconds to avoid Github\'s secondary rate limit...')
+            time.sleep(60)
+            batch_count = 0
 
     return created_count
 
@@ -507,12 +1042,23 @@ if __name__ == '__main__':
     validate_attach_labels(args.attach_labels_list, args.label, source_labels,
                            target_cache)
 
+    # Fetch and validate the projects, compute the project plan (no writes yet)
+    graphql_session = github_session.session
+    target_project, project_plan = load_projects(graphql_session, args)
+
     # Perform the copy of labels (if requested)
     if args.clone_labels:
         print("\n-- Label Cloning Enabled --")
         clone_labels(source_repo, target_repo, source_labels)
     else:
         print("\n-- Label Cloning Disabled --")
+
+    # Perform the copy of the project fields (if requested)
+    if args.clone_project is not None:
+        print("\n-- Project Cloning Enabled --")
+        clone_project(graphql_session, project_plan, target_project)
+    else:
+        print("\n-- Project Cloning Disabled --")
 
     # Perform the copy of milestones (if requested)
     milestone_map_data = {} # Initialize empty map
@@ -529,6 +1075,7 @@ if __name__ == '__main__':
         print("\nNo issues matching the criteria found. Exiting.")
         sys.exit(0)
 
-    num_created = create_issues(target_repo, source_issues_list, args.label, args.attach_labels_list, milestone_map_data)
+    num_created = create_issues(target_repo, source_issues_list, args.label, args.attach_labels_list, milestone_map_data,
+                              target_project, graphql_session)
 
     print(f'\nFinished. Copied {num_created} tasks.')
