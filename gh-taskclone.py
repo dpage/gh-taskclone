@@ -92,20 +92,17 @@ def read_command_line():
             parser.error("'all' in --attach-labels cannot be combined with other labels")
 
     # Project arguments, resolved to project numbers
-    args.target_project_number = None
-    args.clone_project_number = None
-    try:
-        if args.target_project is not None:
-            args.target_project_number = parse_project_ref(args.target_project,
-                                                           args.target_owner)
-    except ValueError as e:
-        parser.error(f"--target-project: {e}")
-    try:
-        if args.clone_project is not None:
-            args.clone_project_number = parse_project_ref(args.clone_project,
-                                                          args.source_owner)
-    except ValueError as e:
-        parser.error(f"--clone-project: {e}")
+    for option, owner, attr in (
+            ('target_project', args.target_owner, 'target_project_number'),
+            ('clone_project', args.source_owner, 'clone_project_number')):
+        setattr(args, attr, None)
+        ref = getattr(args, option)
+        if ref is None:
+            continue
+        try:
+            setattr(args, attr, parse_project_ref(ref, owner))
+        except ValueError as e:
+            parser.error(f"--{option.replace('_', '-')}: {e}")
     if args.clone_project is not None and args.target_project is None:
         parser.error("--clone-project requires --target-project")
     if (args.clone_project is not None
