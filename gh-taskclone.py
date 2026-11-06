@@ -763,21 +763,21 @@ def check_project_plan(plan, target_project, allow_status_replace):
 def load_projects(session, args):
     """Fetches the target project and, for --clone-project, the source project,
     and validates the cloning plan. Makes no GraphQL call without
-    --target-project. Returns (target_project, source_project, plan), each
-    None if not used. No writes."""
+    --target-project. Returns (target_project, plan), each None if not used.
+    No writes."""
     if args.target_project_number is None:
-        return None, None, None
+        return None, None
 
     target_project = fetch_project(session, args.target_owner,
                                    args.target_project_number)
     if args.clone_project_number is None:
-        return target_project, None, None
+        return target_project, None
 
     source_project = fetch_project(session, args.source_owner,
                                    args.clone_project_number)
     plan = diff_project_fields(source_project, target_project)
     check_project_plan(plan, target_project, args.allow_status_replace)
-    return target_project, source_project, plan
+    return target_project, plan
 
 
 def clone_project(session, plan, target_project):
@@ -1044,7 +1044,7 @@ if __name__ == '__main__':
 
     # Fetch and validate the projects, compute the project plan (no writes yet)
     graphql_session = github_session.session
-    target_project, source_project, project_plan = load_projects(graphql_session, args)
+    target_project, project_plan = load_projects(graphql_session, args)
 
     # Perform the copy of labels (if requested)
     if args.clone_labels:

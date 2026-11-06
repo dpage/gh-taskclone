@@ -754,14 +754,13 @@ class TestLoadProjects(TestCase):
 
     def test_no_graphql_call_without_target_project(self):
         session = mock.Mock()
-        self.assertEqual(gtc.load_projects(session, self.args()), (None, None, None))
+        self.assertEqual(gtc.load_projects(session, self.args()), (None, None))
         session.post.assert_not_called()
 
     def test_target_only(self):
         session = fake_session(fake_response(data=project_data(3)))
-        target, source, plan = gtc.load_projects(session, self.args(target=3))
+        target, plan = gtc.load_projects(session, self.args(target=3))
         self.assertEqual(target['number'], 3)
-        self.assertIsNone(source)
         self.assertIsNone(plan)
         self.assertEqual(session.post.call_count, 1)
 
@@ -769,8 +768,8 @@ class TestLoadProjects(TestCase):
         session = fake_session(fake_response(data=project_data(3)),
                                fake_response(data=project_data(2, nodes=[
                                    {'id': 'd', 'name': 'Due date', 'dataType': 'DATE'}])))
-        target, source, plan = gtc.load_projects(session, self.args(target=3, clone=2))
-        self.assertEqual((target['number'], source['number']), (3, 2))
+        target, plan = gtc.load_projects(session, self.args(target=3, clone=2))
+        self.assertEqual(target['number'], 3)
         self.assertEqual(plan['date_fields'], ['Due date'])
         # Fetched with the owner of each project
         self.assertEqual(session.post.call_args_list[0].kwargs['json']['variables']['owner'], 't')
