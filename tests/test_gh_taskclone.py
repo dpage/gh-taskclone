@@ -100,7 +100,7 @@ class TestRateLimitResetWait(TestCase):
 
 
 class FakeAdapter(requests.adapters.BaseAdapter):
-    """Answers each request with the next (status, headers) pair."""
+    """Answers each request with the next (status, headers[, body]) tuple."""
 
     def __init__(self, *answers):
         super().__init__()
@@ -109,11 +109,11 @@ class FakeAdapter(requests.adapters.BaseAdapter):
 
     def send(self, request, **kwargs):
         self.requests.append(request)
-        status, headers = self.answers.pop(0)
+        status, headers, *body = self.answers.pop(0)
         response = requests.Response()
         response.status_code = status
         response.headers.update(headers)
-        response._content = b'{}'
+        response._content = body[0] if body else b'{}'
         response.request = request
         response.url = request.url
         return response
@@ -125,6 +125,7 @@ class FakeAdapter(requests.adapters.BaseAdapter):
 class TestWaitForRateLimit(TestCase):
 
     USED_UP = {'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': '1060'}
+    EXCEEDED = b'{"message": "API rate limit exceeded for user ID 1."}'
 
     def setUp(self):
         super().setUp()
@@ -148,11 +149,17 @@ class TestWaitForRateLimit(TestCase):
                 self.assertEqual(self.get((403, headers)).status_code, 403)
                 self.sleep.assert_not_called()
 
+    def test_permission_error_with_used_up_headers_is_untouched(self):
+        body = b'{"message": "Resource not accessible by personal access token"}'
+        self.assertEqual(self.get((403, self.USED_UP, body)).status_code, 403)
+        self.sleep.assert_not_called()
+        self.assertEqual(len(self.adapter.requests), 1)
+
     def test_waits_for_reset_and_retries(self):
         for status in (403, 429):
             with self.subTest(status=status):
                 self.sleep.reset_mock()
-                response = self.get((status, self.USED_UP), (200, {}))
+                response = self.get((status, self.USED_UP, self.EXCEEDED), (200, {}))
                 self.assertEqual(response.status_code, 200)
                 self.sleep.assert_called_once_with(65)
                 self.assertEqual(len(self.adapter.requests), 2)
@@ -160,13 +167,14 @@ class TestWaitForRateLimit(TestCase):
                                  'https://api.github.com/repos/o/r')
 
     def test_retries_once_only(self):
-        response = self.get((403, self.USED_UP), (403, self.USED_UP))
+        response = self.get((403, self.USED_UP, self.EXCEEDED),
+                            (403, self.USED_UP, self.EXCEEDED))
         self.assertEqual(response.status_code, 403)
         self.sleep.assert_called_once_with(65)
         self.assertEqual(len(self.adapter.requests), 2)
 
     def test_message(self):
-        self.get((403, self.USED_UP), (200, {}))
+        self.get((403, self.USED_UP, self.EXCEEDED), (200, {}))
         self.assertIn('rate limit is used up, waiting 65 seconds', self.out.getvalue())
 
 

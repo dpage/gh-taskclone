@@ -49,6 +49,10 @@ def wait_for_rate_limit(session):
         wait = rate_limit_reset_wait(response)
         if wait is None:
             return None
+        # A permission error can use the last request of the window, and then
+        # carries the same headers. Reading the body also frees the connection.
+        if 'rate limit' not in response.text.lower():
+            return None
         until = time.strftime('%H:%M:%S', time.localtime(time.time() + wait))
         print(f"  Github's rate limit is used up, waiting {wait} seconds "
               f"(until {until})...")
