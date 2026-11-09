@@ -325,3 +325,9 @@ as a single line in `~/.github-token`, or exported in the `GITHUB_TOKEN` environ
 To use `--target-project` or `--clone-project`, the token also needs access to the projects: the `project` scope for a
 classic token, or the Projects read/write permission for a fine-grained token. Fine-grained tokens may not be able to
 access projects owned by a user account (only organization projects), in which case a classic token is needed.
+
+## Rate limits
+
+When GitHub's hourly API rate limit is used up, the script waits until it resets (at most an hour) and then retries
+the request once, so a long run pauses rather than stopping partway through. It also pauses for a minute after every
+10 issues it creates, to stay below GitHub's secondary rate limit.

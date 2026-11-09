@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import github3
+import requests
 
 # The script name contains a hyphen, so it cannot be imported by name
 SCRIPT = Path(__file__).resolve().parent.parent / 'gh-taskclone.py'
@@ -40,6 +41,11 @@ class TestCase(unittest.TestCase):
         self.sleep = stack.enter_context(mock.patch.object(gtc.time, 'sleep'))
         self.addCleanup(stack.close)
 
+    def fix_time(self, now=1000.0):
+        patcher = mock.patch.object(gtc.time, 'time', return_value=now)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def assertExits(self, func, *args, code=1):
         with self.assertRaises(SystemExit) as cm:
             func(*args)
@@ -59,6 +65,109 @@ class TestHelpers(TestCase):
         self.assertEqual(gtc.color_value('#ff0000'), 'ff0000')
         self.assertEqual(gtc.color_value('ff0000'), 'ff0000')
         self.assertEqual(gtc.color_value(None), '')
+
+
+class TestRateLimitResetWait(TestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.fix_time()
+
+    def wait(self, headers):
+        return gtc.rate_limit_reset_wait(SimpleNamespace(headers=headers))
+
+    def test_not_used_up(self):
+        self.assertIsNone(self.wait({}))
+        self.assertIsNone(self.wait({'X-RateLimit-Remaining': '7',
+                                     'X-RateLimit-Reset': '1100'}))
+
+    def test_used_up_without_reset(self):
+        self.assertIsNone(self.wait({'X-RateLimit-Remaining': '0'}))
+        self.assertIsNone(self.wait({'X-RateLimit-Remaining': '0',
+                                     'X-RateLimit-Reset': 'soon'}))
+
+    def test_waits_until_reset_with_margin(self):
+        self.assertEqual(self.wait({'X-RateLimit-Remaining': '0',
+                                    'X-RateLimit-Reset': '1100'}), 105)
+
+    def test_reset_in_the_past(self):
+        self.assertEqual(self.wait({'X-RateLimit-Remaining': '0',
+                                    'X-RateLimit-Reset': '900'}), 5)
+
+    def test_wait_is_limited_to_an_hour(self):
+        self.assertEqual(self.wait({'X-RateLimit-Remaining': '0',
+                                    'X-RateLimit-Reset': '99999'}), 3600)
+
+
+class FakeAdapter(requests.adapters.BaseAdapter):
+    """Answers each request with the next (status, headers) pair."""
+
+    def __init__(self, *answers):
+        super().__init__()
+        self.answers = list(answers)
+        self.requests = []
+
+    def send(self, request, **kwargs):
+        self.requests.append(request)
+        status, headers = self.answers.pop(0)
+        response = requests.Response()
+        response.status_code = status
+        response.headers.update(headers)
+        response._content = b'{}'
+        response.request = request
+        response.url = request.url
+        return response
+
+    def close(self):
+        pass
+
+
+class TestWaitForRateLimit(TestCase):
+
+    USED_UP = {'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': '1060'}
+
+    def setUp(self):
+        super().setUp()
+        self.fix_time()
+
+    def get(self, *answers):
+        session = requests.Session()
+        self.adapter = FakeAdapter(*answers)
+        session.mount('https://', self.adapter)
+        session.hooks['response'].append(gtc.wait_for_rate_limit(session))
+        return session.get('https://api.github.com/repos/o/r')
+
+    def test_success_is_untouched(self):
+        self.assertEqual(self.get((200, {})).status_code, 200)
+        self.sleep.assert_not_called()
+
+    def test_other_forbidden_is_untouched(self):
+        for headers in ({}, {'X-RateLimit-Remaining': '12', 'X-RateLimit-Reset': '1060'},
+                        {'Retry-After': '30'}):
+            with self.subTest(headers=headers):
+                self.assertEqual(self.get((403, headers)).status_code, 403)
+                self.sleep.assert_not_called()
+
+    def test_waits_for_reset_and_retries(self):
+        for status in (403, 429):
+            with self.subTest(status=status):
+                self.sleep.reset_mock()
+                response = self.get((status, self.USED_UP), (200, {}))
+                self.assertEqual(response.status_code, 200)
+                self.sleep.assert_called_once_with(65)
+                self.assertEqual(len(self.adapter.requests), 2)
+                self.assertEqual(self.adapter.requests[1].url,
+                                 'https://api.github.com/repos/o/r')
+
+    def test_retries_once_only(self):
+        response = self.get((403, self.USED_UP), (403, self.USED_UP))
+        self.assertEqual(response.status_code, 403)
+        self.sleep.assert_called_once_with(65)
+        self.assertEqual(len(self.adapter.requests), 2)
+
+    def test_message(self):
+        self.get((403, self.USED_UP), (200, {}))
+        self.assertIn('rate limit is used up, waiting 65 seconds', self.out.getvalue())
 
 
 class TestReadCommandLine(TestCase):
@@ -688,6 +797,15 @@ class TestGraphql(TestCase):
             gtc.graphql(session, 'q')
         self.assertEqual(session.post.call_count, 3)
         self.assertIn('still active', str(cm.exception))
+
+    def test_used_up_rate_limit_waits_for_reset(self):
+        self.fix_time()
+        limited = fake_response(data={}, errors=[{'type': 'RATE_LIMITED', 'message': 'x'}],
+                                headers={'X-RateLimit-Remaining': '0',
+                                         'X-RateLimit-Reset': '1300'})
+        session = fake_session(limited, fake_response(data={'ok': True}))
+        self.assertEqual(gtc.graphql(session, 'q'), {'ok': True})
+        self.sleep.assert_called_once_with(305)
 
 
 class TestFetchProject(TestCase):

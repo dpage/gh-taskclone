@@ -21,6 +21,45 @@ import github3  # Ensure installed: pip install github3.py
 # Global cache for target labels to avoid repeated API calls
 target_labels_cache = None
 
+RATE_LIMIT_RESET_MARGIN = 5 # Seconds added to the reset time, for clock skew
+RATE_LIMIT_MAX_RESET_WAIT = 3600 # The primary rate limit resets within an hour
+
+
+def rate_limit_reset_wait(response):
+    """Seconds until Github's primary rate limit resets, if the response says
+    it is used up, else None."""
+    if response.headers.get('X-RateLimit-Remaining') != '0':
+        return None
+    try:
+        reset = int(response.headers.get('X-RateLimit-Reset'))
+    except (TypeError, ValueError):
+        return None
+    wait = max(reset - int(time.time()), 0) + RATE_LIMIT_RESET_MARGIN
+    return min(wait, RATE_LIMIT_MAX_RESET_WAIT)
+
+
+def wait_for_rate_limit(session):
+    """Returns a response hook for the requests session: when Github's
+    primary rate limit is used up, it waits until the reset and sends the
+    request once more. The REST calls of github3.py and the GraphQL calls
+    share the session, so this covers both."""
+    def hook(response, **kwargs):
+        if response.status_code not in (403, 429):
+            return None
+        wait = rate_limit_reset_wait(response)
+        if wait is None:
+            return None
+        until = time.strftime('%H:%M:%S', time.localtime(time.time() + wait))
+        print(f"  Github's rate limit is used up, waiting {wait} seconds "
+              f"(until {until})...")
+        time.sleep(wait)
+        # Without hooks: if the retry is limited again, it is returned as it is
+        request = response.request.copy()
+        request.hooks = {}
+        return session.send(request, **kwargs)
+    return hook
+
+
 def parse_label_list(value):
     """Split a comma delimited list of label names, dropping empty entries."""
     return [w.strip() for w in value.split(',') if w.strip()]
@@ -499,7 +538,9 @@ def retry_wait(response):
     try:
         return max(int(response.headers.get('Retry-After')), 0)
     except (TypeError, ValueError):
-        return RATE_LIMIT_WAIT
+        pass
+    wait = rate_limit_reset_wait(response)
+    return RATE_LIMIT_WAIT if wait is None else wait
 
 
 def graphql(session, query, variables=None):
@@ -1006,6 +1047,8 @@ if __name__ == '__main__':
     print("Logging into GitHub...")
     try:
         github_session = github3.login(token=GITHUB_TOKEN)
+        github_session.session.hooks['response'].append(
+            wait_for_rate_limit(github_session.session))
         # Check if login was successful (optional but good practice)
         if not github_session.me():
              print("Login failed. Check your token and permissions.")
